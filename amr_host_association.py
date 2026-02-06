@@ -11,6 +11,10 @@ import re
 from collections import Counter
 import sys
 import csv
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
 
 csv.field_size_limit(sys.maxsize)
 
@@ -284,6 +288,97 @@ def pick_winner_species_from_top_ties(top_df: pd.DataFrame, prefer_non_unclassif
             counts.pop("Unclassified", None)
     return counts.most_common(1)[0][0] if counts else "Unclassified"
 
+# ----------------------------
+# plot
+# ----------------------------
+def plot_candidate_dotplot(
+    cand_df: pd.DataFrame,
+    query_id: str,
+    out_png: Path,
+    kraken_out: dict[str, dict],
+    atol_tie: float = 0.0,
+    max_legend_items: int = 12,
+):
+    """
+    Dot plot:
+      x-axis: ranked chromosome contigs (cand_df['rank'])
+      y-axis: contig similarity score (cand_df['final_score'])
+    Only highlight (color) the top-score candidate(s) (ties within atol_tie),
+    and add their Kraken2 taxon labels to the legend.
+    """
+    if cand_df is None or cand_df.empty:
+        return
+
+    df = cand_df.copy()
+    df["rank"] = pd.to_numeric(df["rank"], errors="coerce")
+    df["final_score"] = pd.to_numeric(df["final_score"], errors="coerce")
+    df = df.dropna(subset=["rank", "final_score"])
+    if df.empty:
+        return
+
+    max_score = float(df["final_score"].max())
+    is_top = df["final_score"] >= (max_score - float(atol_tie))
+    top_df = df.loc[is_top].copy()
+    rest_df = df.loc[~is_top].copy()
+
+    plt.figure(figsize=(10, 4.5))
+
+    # Background points (all non-top)
+    if not rest_df.empty:
+        plt.scatter(
+            rest_df["rank"].to_numpy(),
+            rest_df["final_score"].to_numpy(),
+            s=18,
+            c="0.75",       # light gray
+            alpha=0.8,
+            linewidths=0,
+            label=None,
+        )
+
+    # Highlight top points (ties), one-by-one so each can have its own legend label
+    if not top_df.empty:
+        # Keep legend readable if there are tons of ties
+        top_df = top_df.sort_values(["final_score", "shared_motifs", "rmsd"], ascending=[False, False, True])
+        if len(top_df) > max_legend_items:
+            top_df = top_df.head(max_legend_items)
+
+        for _, r in top_df.iterrows():
+            cand = str(r["candidate"])
+            raw = kraken_out.get(cand, {}).get("raw", "Unclassified")
+            taxon = clean_taxon(raw)
+
+            # Legend label requested: include Kraken2 taxon
+            # (also include candidate id so duplicates are clearer)
+            lab = f"{taxon} — {cand}"
+
+            plt.scatter(
+                [float(r["rank"])],
+                [float(r["final_score"])],
+                s=48,
+                alpha=0.95,
+                linewidths=0.5,
+                edgecolors="black",
+                label=lab,
+            )
+
+    plt.xlabel("Ranked chromosome contigs")
+    plt.ylabel("Contig similarity score")
+    plt.title(f"{query_id}")
+
+    # Only show legend if we have highlighted points
+    if not top_df.empty:
+        plt.legend(
+            loc="best",
+            frameon=False,
+            fontsize=8,
+            handlelength=1.2,
+            borderaxespad=0.5,
+        )
+
+    out_png.parent.mkdir(parents=True, exist_ok=True)
+    plt.tight_layout()
+    plt.savefig(out_png, dpi=200)
+    plt.close()
 
 # ----------------------------
 # Core pipeline
@@ -359,6 +454,14 @@ def run_assignment(
             kraken_out=kraken_out,
             min_overlap=min_overlap_motifs,
         )
+                # Dot plot (rank vs final_score), highlight top score ties
+        plot_candidate_dotplot(
+            cand_df=cand_df,
+            query_id=p,
+            out_png=outdir / "plots" / f"{p}.dotplot.png",
+            kraken_out=kraken_out,
+            atol_tie=atol_tie,
+        )
 
         if cand_df.empty:
             row["assignment_method"] = "nanomotif_no_candidates"
@@ -419,6 +522,14 @@ def run_assignment(
             contig2vals=contig2vals,
             kraken_out=kraken_out,
             min_overlap=min_overlap_motifs,
+        )
+
+        plot_candidate_dotplot(
+            cand_df=cand_df,
+            query_id=c,
+            out_png=outdir / "plots" / f"{c}.dotplot.png",
+            kraken_out=kraken_out,
+            atol_tie=atol_tie,
         )
 
         if cand_df.empty:
