@@ -189,6 +189,10 @@ def load_motif_scores_long(path: Path) -> pd.DataFrame:
     df["median"] = pd.to_numeric(df["median"], errors="coerce")
     df["contig"] = df["contig"].astype(str).str.strip()
     df["motif"] = df["motif"].astype(str).str.strip()
+    df["mod_type"] = df["mod_type"].astype(str).str.strip()
+    df["mod_position"] = df["mod_position"].astype(str).str.strip()
+
+    df["motif"] = df["motif"] + "_" + df["mod_type"] + "_" + df["mod_position"]
 
     df = df.groupby(["contig", "motif"], as_index=False)["median"].median()
     df = df.dropna(subset=["median"])
