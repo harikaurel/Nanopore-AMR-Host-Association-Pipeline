@@ -976,6 +976,62 @@ def build_nobs_lookup(meth_path: Path) -> dict:
     print(f"[nobs] using '{ncol}' as the observation count.")
     return {(c, k): float(v) for c, k, v in zip(g["contig"], g["key"], g["n"])}
 
+_COV_VALUE_COLS = ("coverage", "meandepth", "mean_depth", "depth")
+_COV_LEN_COLS = ("length", "contig_length", "len")
+
+
+def load_coverage_map(path) -> dict[str, tuple[float, float]]:
+    """Read contig_coverage.tsv -> {contig: (mean_depth, length_bp)}."""
+    if not path:
+        return {}
+    p = Path(path)
+    if not p.is_file():
+        print(f"[cov] coverage table not found: {p}")
+        return {}
+    try:
+        df = pd.read_csv(p, sep="\t", dtype=str)
+    except Exception as e:
+        print(f"[cov] could not read {p}: {e}")
+        return {}
+    df.columns = [c.strip() for c in df.columns]
+    low = {c.lower(): c for c in df.columns}
+    ccol = next((low[k] for k in _COV_VALUE_COLS if k in low), None)
+    lcol = next((low[k] for k in _COV_LEN_COLS if k in low), None)
+    kcol = low.get("contig") or low.get("rname") or df.columns[0]
+    if ccol is None and lcol is None:
+        print(f"[cov] no coverage/length columns in {p}; columns: {list(df.columns)}")
+        return {}
+    out: dict[str, tuple[float, float]] = {}
+    for _, row in df.iterrows():
+        cid = str(row[kcol]).strip()
+        if not cid or cid.lower() == "nan":
+            continue
+        cov = pd.to_numeric(row[ccol], errors="coerce") if ccol else np.nan
+        ln = pd.to_numeric(row[lcol], errors="coerce") if lcol else np.nan
+        out[cid] = (float(cov), float(ln))
+    print(f"[cov] loaded coverage/length for {len(out)} contigs from {p.name}")
+    return out
+
+
+def _fmt_len(bp: float) -> str:
+    if not np.isfinite(bp):
+        return "?"
+    if bp >= 1e6:
+        return f"{bp / 1e6:.2f} Mb"
+    if bp >= 1e3:
+        return f"{bp / 1e3:.1f} kb"
+    return f"{int(bp)} bp"
+
+
+def _cov_suffix(contig: str, cov_map: dict) -> str:
+    if not cov_map:
+        return ""
+    cov, ln = cov_map.get(str(contig), (np.nan, np.nan))
+    if not np.isfinite(cov) and not np.isfinite(ln):
+        return ""
+    cov_txt = f"{cov:.1f}x" if np.isfinite(cov) else "?"
+    return f"\n{_fmt_len(ln)}\n{cov_txt}"
+
 
 def _italic_taxon(s: str) -> str:
     esc = str(s).replace("\\", " ").replace("$", "")
@@ -1024,6 +1080,7 @@ def plot_top_taxa_heatmap(
     out_png: Path,
     out_pdf: Path,
     nobs: dict | None = None,
+    cov_map: dict | None = None,
     all_motifs: bool = False,
     max_motifs: int = 0,
     order: str = "methylation",
@@ -1034,6 +1091,8 @@ def plot_top_taxa_heatmap(
     from matplotlib.colors import LinearSegmentedColormap
 
     nobs = nobs or {}
+
+    cov_map = cov_map or {}
 
     def _meth_dict(cid):
         ms = contig2motifs.get(cid)
@@ -1097,10 +1156,8 @@ def plot_top_taxa_heatmap(
                 N_val[i, j] = nn
 
     q_tag = "plasmid query" if query_mol == "plasmid" else f"{query_mol} query"
-    col_labels = [f"{query_id}\n({q_tag})"]
+    col_labels = [f"{query_id}\n({q_tag}){_cov_suffix(query_id, cov_map)}"]
     for idx, r in enumerate(picked):
-
-
         is_top = (idx == 0)
         sp = r["species"]
         lab = f"{r['contig']}"
@@ -1114,6 +1171,7 @@ def plot_top_taxa_heatmap(
                 lab += "\n" + _italic_taxon(sp)
             elif sp == "Unclassified":
                 lab += "\nUnclassified"
+        lab += _cov_suffix(r["contig"], cov_map)
         col_labels.append(lab)
 
     fs = fontsize
@@ -1208,6 +1266,7 @@ def run_top_taxa_heatmaps(
     fontsize: float = 11.0,
     only_contig: set | None = None,
     prefix: str = "",
+    cov_map: dict | None = None,
 ):
     if only_contig is None:
         print("      -> no --only-contig: skipping top-taxa heatmaps "
@@ -1220,7 +1279,6 @@ def run_top_taxa_heatmaps(
     def _safe_name(s: str) -> str:
         return re.sub(r"[^A-Za-z0-9._-]", "_", str(s))
 
-
     chrom_ids = [
         c for c in contig_types.query("molecule_type == 'chromosome'")["contig_id"].astype(str)
         if c in contig2motifs
@@ -1231,7 +1289,6 @@ def run_top_taxa_heatmaps(
 
     mol_of = dict(zip(contig_types["contig_id"].astype(str),
                       contig_types["molecule_type"].astype(str)))
-
 
     queries = [ctg for ctg in contig_types["contig_id"].astype(str)
                if ctg in contig2motifs and amr_map.get(ctg)]
@@ -1270,7 +1327,8 @@ def run_top_taxa_heatmaps(
             contig2motifs=contig2motifs, contig2vals=contig2vals,
             out_png=base / sub / f"{stem}.png",
             out_pdf=base / sub / f"{stem}.pdf",
-            nobs=nobs, all_motifs=all_motifs, max_motifs=max_motifs,
+            nobs=nobs, cov_map=cov_map,
+            all_motifs=all_motifs, max_motifs=max_motifs,
             order=order, orient=orient, fontsize=fontsize,
         )
 
@@ -1623,6 +1681,9 @@ def main():
                     help="Heatmap orientation")
     ap.add_argument("--top-taxa-fontsize", type=float, default=11.0,
                     help="Base font size for the heatmap")
+    ap.add_argument("--coverage-tsv", default=None,
+                    help="Per-contig coverage table from contig_coverage.sh "
+                         "(contig/coverage/length); annotates heatmap columns")
 
     args = ap.parse_args()
 
@@ -1729,6 +1790,7 @@ def main():
         fontsize=args.top_taxa_fontsize,
         only_contig=only_contig,
         prefix=args.prefix,
+        cov_map=load_coverage_map(args.coverage_tsv),
     )
 
     print("[ALL DONE]")
