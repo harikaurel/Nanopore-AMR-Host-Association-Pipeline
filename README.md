@@ -49,7 +49,7 @@ order below**.
 | Tool | Version | Role in the pipeline |
 | --- | --- | --- |
 | `dorado` | v0.9.1 (model `dna_r10.4.1_e8.2_400bps_sup@v5.0.0`) | Basecalling, read alignment, assembly polishing |
-| `samtools` | v1.21 | BAM manipulation |
+| `samtools` | v1.21 | BAM manipulation, per-contig coverage |
 | `chopper` | v0.11.0 | Read quality & length filtering |
 | `nanoMDBG`| v1.0 | Metagenome assembly |
 | `modkit` | v0.5.0 | Methylation pileup |
@@ -62,7 +62,7 @@ order below**.
 ### Python
 
 - Python ≥ 3.9
-- Packages: `pandas`, `numpy`, `pysam`
+- Packages: `pandas`, `numpy`, `pysam`, `matplotlib`, `scikit-bio`, `numba`
 
 ---
 
@@ -165,6 +165,14 @@ bash kraken2.sh
 bash modkit_pileup.sh
 ```
 
+**13b · Per-contig coverage**
+`contig_coverage.sh` — aligned BAM → `contig_coverage.tsv`
+Mean depth and length per contig, used to annotate the heatmap columns in step 16.
+```bash
+bash contig_coverage.sh polished_aligned.bam
+```
+Columns: `contig`, `coverage` (mean depth), `length`, `breadth` (percent bases covered), `meanmapq`. Contig names must match the assembly IDs used by MobSuite and Nanomotif.
+
 **14 · Contigs as bins**
 `make_contig_bins.py` — assembly FASTA → contig-bin TSV
 Used to force **contig-level motif discovery**.
@@ -205,7 +213,7 @@ where RMSD is the root-mean-square deviation between the two contigs' Nanomotif 
 - Kraken2 taxonomy is used only for **annotation**
 
 ```bash
-python similarity_scores.py \
+python cupid_contig.py \
   --nanomotif-dir /path/to/nanomotif_output \
   --mobsuite-dir  /path/to/mobsuite_output \
   --amr-dir       /path/to/amrfinder_output \
@@ -216,14 +224,16 @@ python similarity_scores.py \
 The assignment table is written for **every** AMR-carrying plasmid on every run. To also generate per-contig figures for one or more specific contigs, add `--only-contig`:
 
 ```bash
-python similarity_scores.py \
+python cupid_contig.py \
   ... \
   --only-contig ctg123 \
 ```
 
+Add `--coverage-tsv /path/to/contig_coverage.tsv` to print each contig's length and mean depth under its heatmap column label.
+
 For each requested contig this produces:
 - a **top-N PCoA** plot (default `--topn-pcoa 100`) with a full-candidate inset, and
-- a **top-5 species heatmap** — the plasmid next to one chromosome from each of the top 5 distinct host species.
+- a **top-5 species heatmap** — the plasmid next to one chromosome from each of the top 5 distinct host species, optionally annotated with contig length and mean depth.
 
 ---
 
@@ -259,7 +269,7 @@ A persistent `species_colors.json` is also written/updated so taxa keep consiste
 ---
 ## Read-level host association
 
-`read_similarity_scores.py` — a **per-read** alternative to step 16. Instead of assembled contigs, it works directly on **individual reads**: each AMR-carrying read is scored against the pool of classified chromosome reads by methylation similarity, using the same score
+`cupid_read.py` — a **per-read** alternative to step 16. Instead of assembled contigs, it works directly on **individual reads**: each AMR-carrying read is scored against the pool of classified chromosome reads by methylation similarity, using the same score
 
 ```
 rss = max(0, 1 − RMSD) × n_shared_motifs
@@ -271,7 +281,7 @@ computed on the **mean** methylation probability per motif.
 
 The read-level route needs a **per-read** methylation table (the `--read-motif-dir` input). This is produced by **epimetheus** from the MM/ML base-modification tags in the filtered BAM, scored against the motifs discovered by **Nanomotif**.
 
-**1 · Motif list** — Nanomotif's motif-discovery step (step 12) writes `bin-motifs.tsv` with `motif`, `mod_type` and `mod_position` columns. epimetheus wants these joined as `motif_modtype_modposition`, one per line:
+**1 · Motif list** — Nanomotif's motif-discovery step (step 15) writes `bin-motifs.tsv` with `motif`, `mod_type` and `mod_position` columns. epimetheus wants these joined as `motif_modtype_modposition`, one per line:
 
 ```
 AAGNNNNNGTNG_a_1
@@ -385,7 +395,7 @@ python build_contig_gt.py \
 
 ### Step 4 · AMR host association
 
-Run `similarity_scores.py` on the mock assembly to generate Nanomotif-based host predictions.
+Run `cupid_contig.py` on the mock assembly to generate Nanomotif-based host predictions.
 
 ### Step 5 · Evaluation (Nanomotif vs ground truth)
 
